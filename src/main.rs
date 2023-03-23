@@ -33,6 +33,10 @@ impl C {
         //     C::Black => Color::AnsiValue(208),
         //     C::White => Color::AnsiValue(34),
         // }
+        // match self {
+        //     C::Black => Color::Black,
+        //     C::White => Color::White,
+        // }
         match self {
             C::Black => Color::Black,
             C::White => Color::White,
@@ -83,6 +87,17 @@ impl Piece {
             Piece::Knight(a, _) => *a,
             Piece::Rook(a, _) => *a,
             Piece::Pawn(a, _) => *a,
+        }
+    }
+
+    fn weight(&self) -> f32 {
+        match self {
+            Piece::King(a, _) => 20.0,
+            Piece::Queen(a, _) => 7.0,
+            Piece::Bishop(a, _) => 3.0,
+            Piece::Knight(a, _) => 3.0,
+            Piece::Rook(a, _) => 5.0,
+            Piece::Pawn(a, _) => 2.0,
         }
     }
 
@@ -206,6 +221,8 @@ struct Board {
     action: Action,
     unicode: bool,
     winner: Option<C>,
+    bot:bool,
+    last_move: Pos,
 }
 
 impl Board {
@@ -304,7 +321,9 @@ impl Board {
                                         && y == match self.current_player {
                                             C::Black => -1,
                                             C::White => 1,
-                                        } =>
+                                        } 
+                                        && self.get(pos) != None
+                                        && self.get(pos).unwrap().pieces.len() == 0=>
                                 {
                                     move_list.push((new_pos, piece));
                                 }
@@ -348,7 +367,127 @@ impl Board {
         return move_list;
     }
 
-    fn update(&mut self, mut mouse: Pos, click: bool, mouse_coords: (u16, u16)) -> Result<()> {
+    fn eval(&mut self) -> f32 {
+        let mut score = 0.0;
+        let mut kings:Vec<(Pos, f32, C)> = vec![];
+        // if self.winner == Some(C::Black) {
+        //     return 999999.99
+        // }
+        // if self.winner == Some(C::White) {
+        //     return -999999.99
+        // }
+
+        for x in 0..8 {
+            for y in 0..8 {
+                let position = Pos::new(x,y);
+                if let Some(sq) = self.get(position) {
+                    for p in &sq.pieces {
+                    if p.coord() == 0 {
+                        kings.push((position, p.value(), p.color()));
+                    }
+                }
+                }
+        }}
+
+        for x in 0..8 {
+            for y in 0..8 {
+                let position = Pos::new(x,y);
+                let square = self.get(position).unwrap();
+                let total: f32 = square.pieces.iter().map(|f| f.value()).sum::<f32>().max(100.0);
+                let mut square_value = 0.0;
+                let og_color = self.current_player;
+                for i in &square.pieces {
+                    square_value += i.value()/total * i.weight() * 100.0 * match i.color() {C::Black => 1.0, C::White => -1.0};
+                    if i.coord() == 0 {
+                        score += match i.color() {C::Black => 1.0, C::White => -1.0} *10.0;
+                    }
+                }
+                score += square_value;
+                if square_value < 0.0 {
+                self.current_player = C::Black;
+                for (_,p) in self.get_moves(position) {
+                    score -= (square_value/100.0) * (p.value());
+                    score += 1.0;
+                    for k in &kings {
+                        if k.2 == C::White {
+                            score += k.1 / 1000.0 * ((position.x - k.0.x)as f32).abs()+((position.y - k.0.y)as f32).abs()
+                        }
+                    }
+                }
+            }
+            if square_value > 0.0 {
+                self.current_player = C::White;
+                for (_,p) in self.get_moves(position) {
+                    score -= 1.0;
+                    score -= (square_value/100.0) * (p.value());
+                    for (_,p) in self.get_moves(position) {
+                    score -= (square_value/100.0) * (p.value());
+                    for k in &kings {
+                        if k.2 == C::Black {
+                            score -= k.1 / 1000.0 * ((position.x - k.0.x)as f32).abs()+((position.y - k.0.y)as f32).abs()
+                        }
+                    }
+                }
+            }
+            }
+                
+                self.current_player = og_color;
+            }
+        }
+
+        return score
+    } 
+
+    fn bot_move(&mut self) {
+        let og = self.clone();
+        let mut moves: Vec<(Action, Pos, f32)> = vec![];
+        for x in 0..8 {
+            for y in 0..8 {
+                let pos = Pos::new(x,y);
+                if let Some(p) = self.get(pos).unwrap().pieces.get(0)  {
+                    let mut ob_score = 0.0;
+                    if p.value() < 100.0 {
+                    for _ in 0..10 {
+                        self.action = Action::Observe;
+                        self.update(pos, true, (0,0), false);
+                        ob_score += self.eval();
+                        self.new_state(og.clone());
+                    }
+                    moves.push((Action::Observe, pos, ob_score/10.0));
+                }
+                }
+
+                self.action = Action::Manipulate;
+                if self.get_moves(pos) != vec![] {
+                    self.update(pos, true, (0,0), false);
+                    moves.push((Action::Manipulate, pos, self.eval()));
+                }
+                self.new_state(og.clone());
+            }
+        }
+
+        if moves.len() == 0 {
+            self.winner = Some(C::White);
+            return
+        }
+
+        moves.sort_by_key(|x| -x.2 as i32);
+        let before_action = og.action;
+        self.action = moves[0].0;
+        self.update(moves[0].1, true, (0,0), true);
+        self.action = before_action;
+    }
+
+    fn new_state(&mut self, new:Board) {
+        self.action = new.action;
+        self.grid = new.grid;
+        // self.unicode = new.unicode;
+        self.current_player = new.current_player;
+        self.winner = new.winner;
+        self.last_move = new.last_move;
+    }
+
+    fn update(&mut self, mut mouse: Pos, click: bool, mouse_coords: (u16, u16), render:bool) -> Result<()> {
         let mut stdout = stdout();
 
         if let Some(x) = self.winner {
@@ -357,11 +496,7 @@ impl Board {
             }
             if click {
                 let new = Board::new();
-                self.unicode = new.unicode;
-                self.winner = new.winner;
-                self.action = new.action;
-                self.grid = new.grid;
-                self.current_player = new.current_player;
+                self.new_state(new);
             }
         }
 
@@ -373,17 +508,14 @@ impl Board {
             [0.0, 0.0],
             [0.0, 0.0],
         ];
-
-
         
-
-    
-
+        
         let highlight_color = match mouse_coords {
             (a, 2) if a > 8 * 6 + 12 && a < 8 * 6 + 18 => Some(C::Black),
             (a, 2) if a < 8 * 6 + 24 && a > 8 * 6 + 18 => Some(C::White),
             _ => None,
         };
+        if render {
 
         if click && mouse.y == 1 && [12, 13].contains(&mouse.x) {
             self.action = match self.action {
@@ -396,6 +528,11 @@ impl Board {
             self.unicode = !self.unicode;
         }
 
+        if click && mouse.y == 8 && mouse.x > 3 && mouse.x <= 5{
+            self.bot = !self.bot;
+        }
+
+
         queue!(
             stdout,
             cursor::MoveTo(8 * 6 + 5, 2),
@@ -404,6 +541,11 @@ impl Board {
             style::PrintStyledContent("[Black|White]".white()),
             cursor::MoveTo(11 * 6 + 12, 3),
             style::PrintStyledContent("(click to switch)".dark_grey().italic()),
+            cursor::MoveTo(30, 2 + 3 * 8),
+            style::PrintStyledContent("AI: ".white()),
+            style::PrintStyledContent("On".grey().on(match self.bot {true => Color::DarkYellow, false => Color::Black}).italic()),
+            style::PrintStyledContent("/".white()),
+            style::PrintStyledContent("Off".grey().on(match !self.bot {true => Color::DarkYellow, false => Color::Black}).italic()),
             cursor::MoveTo(3, 2 + 3 * 8),
             style::PrintStyledContent("Toggle Unicode".dark_grey().italic()),
             cursor::MoveTo(11 * 6 + 12, 2 + 3),
@@ -416,13 +558,42 @@ impl Board {
                 Action::Observe => Color::DarkYellow,
                 Action::Manipulate => Color::Black,
             })),
+
         )?;
+
+        let eval = self.eval();
+
+        let bar = (eval.signum()*(eval.powi(2)).powf(0.25))/6.0;
+        queue!(
+                stdout,
+                cursor::MoveTo(1, 1),
+                style::PrintStyledContent(
+                    format!("{} ",bar.round().abs()).white()),
+                cursor::MoveTo(4, 1),
+                style::PrintStyledContent(
+                    format!("{}        ",eval.round()).grey().italic()),
+                
+        )?;
+        for y in 2..8*3+2 {
+            queue!(
+                stdout,
+                cursor::MoveTo(1, y),
+                style::PrintStyledContent(
+                    format!("  ").on(match (y-2) as f32 -12.0 > bar {true => Color::White, false => Color::Black})
+                ),
+            )?;
+        }
+        }
+
+
+
         if self.get(mouse) != None {
             let square = self.get(mouse).unwrap();
             let mut pieces = square.pieces;
             let total: f32 = pieces.iter().map(|f| f.value()).sum::<f32>().max(100.0);
             pieces.sort_by_key(|f| (f.value() * 100.0) as i32);
-            queue!(
+
+            if render {queue!(
                 stdout,
                 cursor::MoveTo(8 * 6 + 5, 3),
                 style::PrintStyledContent(
@@ -454,6 +625,7 @@ impl Board {
                     style::PrintStyledContent("                   ".white()),
                 )?;
             }
+        }
             if click
                 && self.action == Action::Observe
                 && pieces.len() >= 1
@@ -519,10 +691,16 @@ impl Board {
 
         for x in 0..8 {
             for y in 0..8 {
-                let square = self.get(Pos::new(x, y)).unwrap();
-                self.grid[x as usize][y as usize]
+        self.grid[x as usize][y as usize]
                     .pieces
                     .retain(|f| f.value() != 0.0);
+        }}
+
+        if render {
+        for x in 0..8 {
+            for y in 0..8 {
+                let square = self.get(Pos::new(x, y)).unwrap();
+                
                 let mut pieces = square.pieces;
                 let total: f32 = pieces.iter().map(|f| f.value()).sum::<f32>().max(100.0);
                 pieces.sort_by_key(|f| (f.value() * 100.0) as i32);
@@ -631,8 +809,16 @@ impl Board {
                         C::Black => 0,
                     }] += i.value() / total;
                     
-                    let gradient = [colorous::VIRIDIS];
-                    let pallet = gradient[0].eval_continuous(1.0-n as f64);
+                    let gradient = [
+                        colorous::VIRIDIS,
+                        colorous::CIVIDIS,
+                        colorous::TURBO,
+                        colorous::CUBEHELIX,
+                        colorous::SINEBOW,
+                        colorous::COOL,
+                        colorous::WARM,
+                    ];
+                    let pallet = gradient[5].eval_continuous(1.0-n as f64);
                     queue!(
                         stdout,
                         cursor::MoveTo(
@@ -648,7 +834,7 @@ impl Board {
 
 
 
-                            i.text(self.unicode).with(i.color().color_val()).on(
+                            i.text(self.unicode).with(i.color().color_val()).attribute(style::Attribute::Framed).on(
                                 match potential_moves.contains(&(Pos::new(x, y), *i))
                                     && self.action == Action::Manipulate
                                 {
@@ -666,6 +852,7 @@ impl Board {
                         )
                     )?;
                 }
+            }
             }
         }
 
@@ -712,7 +899,7 @@ impl Board {
         if stats[0][1] == 0.0 {
             self.winner = Some(C::Black)
         }
-
+        if render {
         if let Some(w) = self.winner {
             queue!(
                 stdout,
@@ -720,16 +907,20 @@ impl Board {
                 style::PrintStyledContent(format!("{w:?} Won!").black().on_dark_yellow()),
             )?;
         }
-
-
-
-
         stdout.flush()?;
+    }
+
+
+        if render && self.current_player == C::Black && self.bot {
+            self.bot_move()
+        }
+
         Ok(())
     }
 
     fn new() -> Board {
         Board {
+            bot: false,
             action: Action::Manipulate,
             current_player: C::White,
             unicode: true,
@@ -835,7 +1026,7 @@ fn main() {
     stdout.flush();
     let mut cursor = Pos::new(10, 10);
     let mut commit = Pos::new(10, 10);
-    board.update(cursor, false, (0, 0));
+    board.update(cursor, false, (0, 0), true);
     loop {
         match read().expect("well idk how this hapened") {
             Event::FocusGained => {}
@@ -850,7 +1041,7 @@ fn main() {
             }
             Event::Mouse(event) => match event.kind {
                 event::MouseEventKind::Down(_) => {
-                    board.update(cursor, true, (event.column, event.row));
+                    board.update(cursor, true, (event.column, event.row), true);
                 }
                 event::MouseEventKind::Up(_) => {}
                 event::MouseEventKind::Drag(_) => {}
@@ -860,11 +1051,11 @@ fn main() {
                         if [2, 3].contains(&event.row)
                             && ((6 * 8 + 4)..(8 * 8 + 4)).contains(&event.column)
                         {
-                            board.update(cursor, false, (event.column, event.row));
+                            board.update(cursor, false, (event.column, event.row), true);
                         }
                         if new_pos != cursor {
                             cursor = new_pos;
-                            board.update(cursor, false, (event.column, event.row));
+                            board.update(cursor, false, (event.column, event.row), true);
                         }
                     }
                 }
@@ -874,7 +1065,7 @@ fn main() {
             Event::Paste(data) => {}
             Event::Resize(width, height) => {
                 queue!(stdout, terminal::Clear(ClearType::All),);
-                board.update(cursor, false, (0, 0));
+                board.update(cursor, false, (0, 0), true);
             }
         }
         // board.draw();
