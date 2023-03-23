@@ -1,4 +1,5 @@
 use random_number::random;
+use rgb2ansi256::rgb_to_ansi256;
 use std::{
     collections::hash_map::RandomState,
     io::{self, stdout, Write},
@@ -9,9 +10,11 @@ use crossterm::{
     event::{self, read, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute, queue,
     style::{self, Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor, Stylize},
-    terminal::{self, Clear, ClearType},
+    terminal::{self, Clear, ClearType, SetSize, SetTitle},
     ExecutableCommand, QueueableCommand, Result,
 };
+
+
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum C {
@@ -348,22 +351,18 @@ impl Board {
     fn update(&mut self, mut mouse: Pos, click: bool, mouse_coords: (u16, u16)) -> Result<()> {
         let mut stdout = stdout();
 
-
-        if let Some(x) = self.winner  {
-
+        if let Some(x) = self.winner {
             if self.get(mouse) != None {
                 mouse = Pos::new(20, 20);
             }
             if click {
-            let new = Board::new();
-            self.unicode = new.unicode;
-            self.winner = new.winner;
-            self.action = new.action;
-            self.grid = new.grid;
-            self.current_player = new.current_player;
-            
+                let new = Board::new();
+                self.unicode = new.unicode;
+                self.winner = new.winner;
+                self.action = new.action;
+                self.grid = new.grid;
+                self.current_player = new.current_player;
             }
-
         }
 
         let mut stats = [
@@ -374,6 +373,11 @@ impl Board {
             [0.0, 0.0],
             [0.0, 0.0],
         ];
+
+
+        
+
+    
 
         let highlight_color = match mouse_coords {
             (a, 2) if a > 8 * 6 + 12 && a < 8 * 6 + 18 => Some(C::Black),
@@ -455,14 +459,13 @@ impl Board {
                 && pieces.len() >= 1
                 && pieces[0].value().round() != 100.0
             {
-                let rand = random!(0, total.floor() as i32);
+                let rand = random!(0, total.floor() as i32*100) as f32 / 100.0;
                 let mut t = 0.0;
                 for i in pieces {
-                    t += i.value()/total;
+                    t += i.value();
                     if t >= rand as f32 {
                         self.grid[mouse.x as usize][mouse.y as usize] = Square::new_blank();
-                        self.grid[mouse.x as usize][mouse.y as usize]
-                            .add_piece(i.with_value(100.0));
+                        self.grid[mouse.x as usize][mouse.y as usize].add_piece(i.with_value(100.0));
                         break;
                     }
                 }
@@ -491,7 +494,19 @@ impl Board {
 
                 for (og_pos, piece) in &potential_moves {
                     let val = piece.value() / number_of_moves as f32;
+                    if mouse.y == match self.current_player  {
+                        C::Black => 7,
+                        C::White => 0
+                    } && piece.coord() == Piece::Pawn(100.0, self.current_player).coord()
+                    && piece.color() == self.current_player {
+                        self.grid[mouse.x as usize][mouse.y as usize].add_piece(Piece::Bishop(piece.value()/4.0, self.current_player));
+                        self.grid[mouse.x as usize][mouse.y as usize].add_piece(Piece::Queen(piece.value()/4.0, self.current_player));
+                        self.grid[mouse.x as usize][mouse.y as usize].add_piece(Piece::Knight(piece.value()/4.0, self.current_player));
+                        self.grid[mouse.x as usize][mouse.y as usize].add_piece(Piece::Rook(piece.value()/4.0, self.current_player));
+
+                    }else {
                     self.grid[mouse.x as usize][mouse.y as usize].add_piece(piece.with_value(val));
+                    }
                     self.grid[og_pos.x as usize][og_pos.y as usize]
                         .minus_piece(piece.with_value(val));
                 }
@@ -548,7 +563,7 @@ impl Board {
                         cursor::MoveTo(x * 6 + 4, y * 3 + 2),
                         style::PrintStyledContent("x".yellow().on_red()),
                     )?;
-                } else if pieces.len() > 1 {
+                } else if pieces.len() > 1 || (pieces.len() == 1 && pieces[0].value() != 100.0) {
                     queue!(
                         stdout,
                         cursor::MoveTo(x * 6 + 4, y * 3 + 2),
@@ -598,9 +613,9 @@ impl Board {
                     queue!(
                         stdout,
                         cursor::MoveTo(
-                            (x+1) * 6 + 4
+                            (x + 1) * 6 + 4
                                 - match self.unicode {
-                                    true => text.len() as u16/3,
+                                    true => text.len() as u16 / 3,
                                     false => text.len() as u16,
                                 },
                             y * 3 + 2
@@ -614,7 +629,10 @@ impl Board {
                     stats[i.coord() as usize][match i.color() {
                         C::White => 1,
                         C::Black => 0,
-                    }] += i.value();
+                    }] += i.value() / total;
+                    
+                    let gradient = [colorous::VIRIDIS];
+                    let pallet = gradient[0].eval_continuous(1.0-n as f64);
                     queue!(
                         stdout,
                         cursor::MoveTo(
@@ -625,26 +643,19 @@ impl Board {
                                     C::Black => 1,
                                 })
                         ),
+                        
                         style::PrintStyledContent(
+
+
+
                             i.text(self.unicode).with(i.color().color_val()).on(
                                 match potential_moves.contains(&(Pos::new(x, y), *i))
                                     && self.action == Action::Manipulate
                                 {
                                     _ if Some(i.color()) == highlight_color =>
                                         Color::AnsiValue(220),
-                                    false => Color::Rgb {
-                                        r: (155.0
-                                            * match n > 0.5 {
-                                                true => 1.0 - 2.0 * (n - 0.5),
-                                                false => 1.0,
-                                            }) as u8,
-                                        b: (255.0
-                                            * match n > 0.5 {
-                                                false => 2.0 * n,
-                                                true => 1.0,
-                                            }) as u8,
-                                        g: 0
-                                    },
+                                    false => Color::AnsiValue(rgb_to_ansi256(pallet.r, pallet.g, pallet.b))
+                                    ,
                                     true => Color::Rgb {
                                         r: 0,
                                         b: 0,
@@ -665,22 +676,34 @@ impl Board {
             cursor::MoveTo(12 * 6 + 7, 10),
             style::PrintStyledContent("---------------".white()),
         )?;
-        for (j,i) in stats.iter().enumerate() {
-        queue!(
-            stdout,
-            cursor::MoveTo(12 * 6 + 7, 11+j as u16),
-            style::PrintStyledContent(truncate(&format!("{}: {:?}",match j {
-                0 => Piece::King(0.0, C::White).text(self.unicode),
-                1 => Piece::Queen(0.0, C::White).text(self.unicode),
-                2 => Piece::Bishop(0.0, C::White).text(self.unicode),
-                3 => Piece::Knight(0.0, C::White).text(self.unicode),
-                4 => Piece::Rook(0.0, C::White).text(self.unicode),
-                5 => Piece::Pawn(0.0, C::White).text(self.unicode),
-                _ => "Err".to_owned()
-            }, (i[0]*100.0).round()/10000.0),7).white()),
-            cursor::MoveTo(12 * 6 + 14, 11+j as u16),
-            style::PrintStyledContent(format!("| {:?}", (i[1]*100.0).round()/10000.0).white()),
-        )?;
+        for (j, i) in stats.iter().enumerate() {
+            queue!(
+                stdout,
+                cursor::MoveTo(12 * 6 + 7, 11 + j as u16),
+                style::PrintStyledContent(
+                    truncate(
+                        &format!(
+                            "{}: {:?}",
+                            match j {
+                                0 => Piece::King(0.0, C::White).text(self.unicode),
+                                1 => Piece::Queen(0.0, C::White).text(self.unicode),
+                                2 => Piece::Bishop(0.0, C::White).text(self.unicode),
+                                3 => Piece::Knight(0.0, C::White).text(self.unicode),
+                                4 => Piece::Rook(0.0, C::White).text(self.unicode),
+                                5 => Piece::Pawn(0.0, C::White).text(self.unicode),
+                                _ => "Err".to_owned(),
+                            },
+                            (i[0] * 10.0).round() / 10.0
+                        ),
+                        7
+                    )
+                    .white()
+                ),
+                cursor::MoveTo(12 * 6 + 14, 11 + j as u16),
+                style::PrintStyledContent(
+                    truncate(&format!("| {:?}", (i[1] * 10.0).round() / 10.0),6).white()
+                ),
+            )?;
         }
 
         if stats[0][0] == 0.0 {
@@ -689,14 +712,18 @@ impl Board {
         if stats[0][1] == 0.0 {
             self.winner = Some(C::Black)
         }
-        
+
         if let Some(w) = self.winner {
             queue!(
-            stdout,
-            cursor::MoveTo(4 * 6 + 2, 12),
-            style::PrintStyledContent(format!("{w:?} Won!").black().on_dark_yellow()),
-        )?;
+                stdout,
+                cursor::MoveTo(4 * 6 + 2, 12),
+                style::PrintStyledContent(format!("{w:?} Won!").black().on_dark_yellow()),
+            )?;
         }
+
+
+
+
         stdout.flush()?;
         Ok(())
     }
@@ -803,6 +830,7 @@ fn main() {
         terminal::Clear(ClearType::All),
         EnableMouseCapture,
         Hide,
+        SetTitle("Quantum Chess"),
     );
     stdout.flush();
     let mut cursor = Pos::new(10, 10);
